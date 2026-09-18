@@ -348,8 +348,14 @@ app.get('/api/admin/status', async (c) => {
 });
 app.get('/api/admin/webhook', async (c) => {
   const info = await telegram<Record<string, unknown>>(c.env, 'getWebhookInfo');
+  const configuredOrigin = await getValue(c.env, 'publicOrigin');
+  // Keep the saved canonical origin when the dashboard is opened via another domain.
+  const expectedUrl = `${configuredOrigin || new URL(c.req.url).origin}/webhook`;
   return c.json({
     url: info.url,
+    expectedUrl,
+    matches: info.url === expectedUrl,
+    configured: !!configuredOrigin,
     pending: info.pending_update_count,
     lastError: info.last_error_message || null,
     lastErrorAt: info.last_error_date || null,

@@ -52,11 +52,15 @@ function Toggle({
 }
 export default function SettingsPage({
   status,
+  statusLoading,
+  statusError,
   revision,
   refresh,
   notify,
 }: {
   status: BotStatus | null;
+  statusLoading: boolean;
+  statusError: string;
   revision: number;
   refresh: () => void;
   notify: Notify;
@@ -71,10 +75,15 @@ export default function SettingsPage({
   const [diagnostic, setDiagnostic] = useState<{
     pending: number;
     url: string;
+    expectedUrl: string;
+    matches: boolean;
+    configured: boolean;
     lastError?: string;
     lastErrorAt?: number;
   } | null>(null);
   const [diagnosing, setDiagnosing] = useState(false);
+  const statusReady = !statusLoading && !statusError && status !== null;
+  const configured = statusReady && status.connected;
   useEffect(() => {
     if (resource.data) {
       setConfig(resource.data);
@@ -94,6 +103,7 @@ export default function SettingsPage({
       notify(
         result.warnings.length ? result.warnings.join(' ') : 'Telegram 已连接，命令菜单已设置',
       );
+      setDiagnostic(null);
       refresh();
     } catch (e) {
       setError(e instanceof Error ? e.message : '连接失败');
@@ -104,6 +114,7 @@ export default function SettingsPage({
   const diagnose = async () => {
     setDiagnosing(true);
     setError('');
+    setDiagnostic(null);
     try {
       setDiagnostic(await api('/admin/webhook'));
     } catch (e) {
@@ -129,17 +140,25 @@ export default function SettingsPage({
               <Bot size={21} />
             </span>
             <div>
-              <h2>连接机器人</h2>
-              <p>一扇门，一个机器人，一个属于你的收件箱。</p>
+              <h2>Telegram 连接</h2>
+              <p>首次配置一次，后续更新部署继续使用。</p>
             </div>
-            <span className={`soft-tag ${status?.connected ? 'green-tag' : ''}`}>
-              {status?.connected ? '已配置' : '待连接'}
+            <span className={`soft-tag ${configured ? 'green-tag' : ''}`}>
+              {statusLoading
+                ? '读取中…'
+                : !statusReady
+                  ? '状态未知'
+                  : configured
+                    ? '已配置'
+                    : '无连接记录'}
             </span>
           </div>
           <div className="connection-details">
             <div>
               <span>机器人</span>
-              <strong>{status?.bot ? `@${status.bot.username}` : '等待连接后识别'}</strong>
+              <strong>
+                {status?.bot ? `@${status.bot.username}` : statusReady ? '暂无本地记录' : '—'}
+              </strong>
             </div>
             <div>
               <span>管理员 ID</span>
@@ -151,11 +170,16 @@ export default function SettingsPage({
             </div>
           </div>
           <div className="action-row">
-            <button className="button primary" disabled={connecting} onClick={connect}>
-              {connecting ? <Spinner /> : <Link2 size={15} />}
-              {status?.connected ? '重新连接 Telegram' : '连接 Telegram'}
-            </button>
-            <button className="button secondary" disabled={diagnosing} onClick={diagnose}>
+            {statusReady && !configured && (
+              <button className="button primary" disabled={connecting} onClick={connect}>
+                {connecting ? <Spinner /> : <Link2 size={15} />}连接 Telegram
+              </button>
+            )}
+            <button
+              className={`button ${configured ? 'primary' : 'secondary'}`}
+              disabled={diagnosing || connecting}
+              onClick={diagnose}
+            >
               {diagnosing ? <Spinner /> : <ShieldCheck size={15} />}检查连接
             </button>
             {status?.bot && (
@@ -170,15 +194,53 @@ export default function SettingsPage({
             )}
           </div>
           <p className="field-hint">
-            先用管理员账号给机器人发送 /start，再连接。连接会更新 Webhook
-            和命令菜单，保留尚未处理的消息。
+            {statusLoading
+              ? '正在读取已保存的连接配置，请稍候。'
+              : !statusReady
+                ? '暂时无法读取连接配置，不代表机器人已经断开。请刷新页面或检查连接。'
+                : configured
+                  ? '连接配置已保存。退出后台、重新登录和更新部署都不需要再次连接。收发异常时先检查连接。'
+                  : '首次部署：先向机器人发送 /start，再点击连接。若之前已经连接过，请先检查连接，并确认 DB 仍绑定原数据库。'}
           </p>
+          {configured && (
+            <details>
+              <summary className="text-button">连接维护</summary>
+              <p className="field-hint">
+                仅在更换域名、Bot Token 或修复连接时使用。重新配置会把 Telegram
+                接收地址设为当前后台地址，并更新命令菜单；保留待处理消息。
+              </p>
+              <button
+                className="button secondary"
+                disabled={connecting || diagnosing}
+                onClick={connect}
+              >
+                {connecting ? <Spinner /> : <Link2 size={15} />}重新配置连接
+              </button>
+            </details>
+          )}
           {diagnostic && (
-            <div className={`alert ${diagnostic.lastError ? 'warning' : 'success'}`}>
+            <div
+              className={`alert ${!diagnostic.matches || !diagnostic.configured || diagnostic.lastError ? 'warning' : 'success'}`}
+            >
               <div>
                 <strong>
-                  {diagnostic.url ? `待处理消息：${diagnostic.pending}` : '还没有配置 Webhook'}
+                  {!diagnostic.url
+                    ? 'Telegram 尚未设置接收地址'
+                    : !diagnostic.matches
+                      ? 'Telegram 接收地址与本项目配置不一致'
+                      : !diagnostic.configured
+                        ? '接收地址已匹配，但当前数据库缺少连接记录'
+                        : 'Telegram 接收地址与本项目配置一致'}
                 </strong>
+                <p>待处理消息：{diagnostic.pending}</p>
+                <p>Telegram 接收地址：{diagnostic.url || '未设置'}</p>
+                <p>本项目配置地址：{diagnostic.expectedUrl}</p>
+                {!diagnostic.configured && diagnostic.url && (
+                  <p>
+                    若之前已经连接过，请检查 Cloudflare 的 DB 是否仍绑定原
+                    D1；重新连接不会恢复另一数据库里的历史数据。
+                  </p>
+                )}
                 {diagnostic.lastError && (
                   <p>
                     最近一次错误：{diagnostic.lastError}

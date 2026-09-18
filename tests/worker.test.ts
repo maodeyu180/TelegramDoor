@@ -16,6 +16,7 @@ let nextId = 1000,
 let calls: { method: string; body: Record<string, any> }[] = [];
 let telegramFailure: { method: string; code: number; description?: string } | null = null;
 let turnstileResult: Record<string, unknown> = { success: true };
+let webhookInfo: Record<string, unknown>;
 
 function msg(
   id: string,
@@ -99,6 +100,7 @@ beforeEach(async () => {
   calls = [];
   telegramFailure = null;
   turnstileResult = { success: true };
+  webhookInfo = { url: `${origin}/webhook`, pending_update_count: 0 };
   vi.stubGlobal(
     'fetch',
     vi.fn(async (input: string | Request, init?: RequestInit) => {
@@ -123,7 +125,7 @@ beforeEach(async () => {
         method === 'getMe'
           ? { id: 123456789, username: 'telegramdoor_test_bot', first_name: 'Test' }
           : method === 'getWebhookInfo'
-            ? { url: `${origin}/webhook`, pending_update_count: 0 }
+            ? webhookInfo
             : { message_id: ++nextId };
       return Response.json({ ok: true, result });
     }),
@@ -259,6 +261,65 @@ describe('administration security', () => {
     expect(setup.drop_pending_updates).toBe(false);
     expect(setup.allowed_updates).toContain('edited_message');
     expect(calls.filter((c) => c.method === 'setMyCommands')).toHaveLength(2);
+  });
+  it('keeps connection configuration across logout and login without reconnecting', async () => {
+    const cookie = await login();
+    expect((await request('/api/admin/setup', 'POST', {}, cookie)).status).toBe(200);
+    await request('/api/auth/logout', 'POST', {}, cookie);
+    const nextCookie = await login();
+    const response = await request('/api/admin/status', 'GET', undefined, nextCookie);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      connected: true,
+      origin,
+      bot: { username: 'telegramdoor_test_bot' },
+    });
+    expect(calls.filter((c) => c.method === 'setWebhook')).toHaveLength(1);
+  });
+  it.each([
+    [`${origin}/webhook`, true],
+    ['https://other.example.com/webhook', false],
+    ['', false],
+  ])('compares Telegram webhook %s with the saved receiver', async (url, matches) => {
+    await setValue(env, 'publicOrigin', origin);
+    webhookInfo = { url, pending_update_count: 3 };
+    const cookie = await login();
+    expect(
+      await (await request('/api/admin/webhook', 'GET', undefined, cookie)).json(),
+    ).toMatchObject({
+      url,
+      pending: 3,
+      matches,
+      configured: true,
+      expectedUrl: `${origin}/webhook`,
+    });
+    expect(calls.map((c) => c.method)).toEqual(['getWebhookInfo']);
+  });
+  it('uses the saved canonical domain when checking via another dashboard address', async () => {
+    const canonical = 'https://inbox.example.com';
+    await setValue(env, 'publicOrigin', canonical);
+    webhookInfo = { url: `${canonical}/webhook`, pending_update_count: 0 };
+    const cookie = await login();
+    expect(
+      await (await request('/api/admin/webhook', 'GET', undefined, cookie)).json(),
+    ).toMatchObject({
+      matches: true,
+      expectedUrl: `${canonical}/webhook`,
+    });
+  });
+  it('distinguishes missing local configuration from an already registered webhook', async () => {
+    const cookie = await login();
+    expect(
+      await (await request('/api/admin/webhook', 'GET', undefined, cookie)).json(),
+    ).toMatchObject({
+      matches: true,
+      configured: false,
+      expectedUrl: `${origin}/webhook`,
+    });
+    expect(
+      await env.DB.prepare("SELECT value FROM settings WHERE key='publicOrigin'").first(),
+    ).toBeNull();
+    expect(calls.map((c) => c.method)).toEqual(['getWebhookInfo']);
   });
 });
 

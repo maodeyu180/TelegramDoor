@@ -189,7 +189,19 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
     [toast, setToast] = useState('');
   const [event, setEvent] = useState<EventRow | null>(null),
     [user, setUser] = useState<Person | null>(null);
-  const { data: status, error: statusError } = useResource<BotStatus>('/admin/status', revision);
+  const {
+    data: status,
+    error: statusError,
+    loading: statusLoading,
+  } = useResource<BotStatus>('/admin/status', revision);
+  const statusReady = !statusLoading && !statusError && status !== null;
+  const connectionLabel = statusLoading
+    ? '正在读取连接配置…'
+    : statusError || !status
+      ? '连接状态暂时无法读取'
+      : status.connected
+        ? 'Webhook 已配置'
+        : '尚未配置连接';
   const refresh = useCallback(() => setRevision((v) => v + 1), []);
   const closeEvent = useCallback(() => setEvent(null), []),
     closeUser = useCallback(() => setUser(null), []);
@@ -234,7 +246,7 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
           </span>
           <div>
             <strong>{status?.bot ? `@${status.bot.username}` : '我的 Telegram 入口'}</strong>
-            <small>{status?.connected ? '独立部署 · 已配置' : '等待连接机器人'}</small>
+            <small>{connectionLabel}</small>
           </div>
         </div>
         <span className="nav-label">工作空间</span>
@@ -282,9 +294,9 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
             工作空间 <span>/</span> <strong>{navigation.find((n) => n.id === page)?.label}</strong>
           </span>
           <div className="topbar-right">
-            <span className={`connection ${status?.connected ? 'connected' : ''}`}>
+            <span className={`connection ${statusReady && status?.connected ? 'connected' : ''}`}>
               <i />
-              {status?.connected ? 'Webhook 已配置' : '尚未连接'}
+              {connectionLabel}
             </span>
             <span className="owner-avatar">你</span>
             <button className="icon-button mobile-logout" aria-label="退出登录" onClick={logout}>
@@ -328,17 +340,19 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
             </div>
           </div>
           {statusError && <ErrorBox error={statusError} retry={refresh} />}
-          {status && !status.connected && page !== 'settings' && (
+          {statusReady && status && !status.connected && page !== 'settings' && (
             <div className="setup-banner">
               <div className="banner-icon">
                 <DoorOpen size={22} />
               </div>
               <div>
-                <strong>你的门已经准备好了</strong>
-                <p>连接 Telegram 机器人后，这里就会开始接收消息与防护记录。</p>
+                <strong>当前数据库中没有连接记录</strong>
+                <p>
+                  首次部署请连接机器人。如果之前已连接，请先在防护设置中检查连接，并核对 D1 绑定。
+                </p>
               </div>
               <button className="button primary" onClick={() => go('settings')}>
-                连接机器人 <ArrowRight size={15} />
+                查看连接设置 <ArrowRight size={15} />
               </button>
             </div>
           )}
@@ -348,7 +362,14 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
           )}
           {page === 'users' && <UserList revision={revision} onUser={setUser} />}
           {page === 'settings' && (
-            <SettingsPage status={status} revision={revision} refresh={refresh} notify={setToast} />
+            <SettingsPage
+              status={status}
+              statusLoading={statusLoading}
+              statusError={statusError}
+              revision={revision}
+              refresh={refresh}
+              notify={setToast}
+            />
           )}
           <footer className="content-foot">
             <span>
